@@ -1,0 +1,528 @@
+\subsection{Experiment I: Pairwise Similarity Analysis}
+\underline{Google Colab (Python):}
+\begin{lstlisting}[language=Python]
+!pip install git+https://github.com/openai/CLIP.git
+import torch
+import clip
+from PIL import Image
+import os
+import numpy as np
+device = "cuda" if torch.cuda.is_available() else "cpu"
+model, preprocess = clip.load("ViT-B/32", device=device)
+
+import torchvision
+import torchvision.transforms as transforms
+
+transform = transforms.ToTensor()
+
+dataset = torchvision.datasets.CIFAR10(
+    root="./data",
+    train=False,
+    download=True,
+    transform=transform
+)
+
+target_labels = {
+    "cat": 3,
+    "dog": 5,
+    "automobile": 1,
+    "truck": 9
+}
+
+from PIL import Image
+import numpy as np
+
+selected_images = []
+selected_labels = []
+selected_names = []
+
+counts = {label: 0 for label in target_labels.values()}
+
+def tensor_to_pil(img_tensor):
+    img = img_tensor.permute(1, 2, 0).numpy()
+    img = (img * 255).astype(np.uint8)
+    return Image.fromarray(img)
+
+for img_tensor, label in dataset:
+    if label in counts and counts[label] < 50:
+        selected_images.append(tensor_to_pil(img_tensor))
+        selected_labels.append(label)
+        selected_names.append(label)
+        counts[label] += 1
+   
+    if all(c == 50 for c in counts.values()):
+        break
+from collections import Counter
+Counter(selected_labels)
+
+label_names = {v: k for k, v in target_labels.items()}
+selected_label_names = [label_names[l] for l in selected_labels]
+
+import clip
+import torch
+
+device = "cuda" if torch.cuda.is_available() else "cpu"
+model, preprocess = clip.load("ViT-B/32", device=device)
+
+image_embeddings = []
+
+for img in selected_images:
+    image_input = preprocess(img).unsqueeze(0).to(device)
+    with torch.no_grad():
+        embedding = model.encode_image(image_input)
+    image_embeddings.append(embedding.cpu().numpy())
+
+import numpy as np
+image_embeddings = np.vstack(image_embeddings)
+
+import pandas as pd
+
+pd.DataFrame(image_embeddings).to_csv("clip_embeddings.csv", index=False)
+pd.DataFrame({"label": selected_label_names}).to_csv("labels.csv", index=False)
+
+os.makedirs("images", exist_ok=True)
+from collections import defaultdict
+
+label_counters = defaultdict(int)
+
+for img, label_name in zip(selected_images, selected_label_names):
+    label_counters[label_name] += 1
+    filename = f"{label_name}_{label_counters[label_name]:03d}.png"
+    img.save(os.path.join("images", filename)
+\end{lstlisting}
+
+\underline{RStudio (R):}
+\begin{lstlisting}[language=R]
+>embeddings <- read.csv("clip_embeddings.csv", header = TRUE)
+>labels <- read.csv("labels.csv")$label
+>dim(embeddings)
+>length(labels)
+>vector_norms <- apply(embeddings, 1, function(x) {
++    sqrt(sum(x^2))
++ }) 
+>summary(vector_norms)
+>norm_df <- data.frame(
++    norm = vector_norms,
++    label = labels
++ )
+>install.packages("ggplot2")
+>library(ggplot2)
+>ggplot(norm_df, aes(x = norm, fill = label)) +
+  geom_histogram(bins = 30, alpha = 0.7, position = "identity") +
+  labs(
+    title = "Distribution of CLIP Embedding Norms by Category",
+    x = "Vector Norm",
+    y = "Number of Images"
+  )
+\end{lstlisting}
+
+
+\subsection{Experiment II: Similarity Distributions}
+\underline{RStudio (R):}
+\begin{lstlisting}[language=R]
+> embeddings <- as.matrix(read.csv("clip_embeddings.csv", header = TRUE))
+> labels <- read.csv("labels.csv", header = TRUE)$label
+> 
+> stopifnot(nrow(embeddings) == length(labels))
+> set.seed(42)
+> 
+> # indices by category
+> indices_by_label <- split(1:length(labels), labels)
+> 
+> # SAME-category pairs
+> same_pairs <- lapply(indices_by_label, function(idx) {
++    t(combn(sample(idx, 10), 2))
++ })
+> same_pairs <- do.call(rbind, same_pairs)
+> same_pairs <- same_pairs[sample(nrow(same_pairs), 50), ]
+> 
+> # DIFFERENT-category pairs
+> diff_pairs <- matrix(nrow = 50, ncol = 2)
+> 
+> for (i in 1:50) {
++    labs <- sample(names(indices_by_label), 2)
++    diff_pairs[i, 1] <- sample(indices_by_label[[labs[1]]], 1)
++    diff_pairs[i, 2] <- sample(indices_by_label[[labs[2]]], 1)
++ }
+> euclidean <- function(x, y) {
++    sqrt(sum((x - y)^2))
++ }
+> cosine <- function(x, y) {
++    sum(x * y) / (sqrt(sum(x^2)) * sqrt(sum(y^2)))
++ }
+> # SAME-category
+> cos_same <- apply(same_pairs, 1, function(p)
++    cosine(embeddings[p[1], ], embeddings[p[2], ])
++ )
+> 
+> euc_same <- apply(same_pairs, 1, function(p)
++    euclidean(embeddings[p[1], ], embeddings[p[2], ])
++ )
+> 
+> # DIFFERENT-category
+> cos_diff <- apply(diff_pairs, 1, function(p)
++    cosine(embeddings[p[1], ], embeddings[p[2], ])
++ )
+> 
+> euc_diff <- apply(diff_pairs, 1, function(p)
++    euclidean(embeddings[p[1], ], embeddings[p[2], ])
++ )
+
+> library(ggplot2)
+> > # Prepare data
+> cos_df <- data.frame(
++    value = c(cos_same, cos_diff),
++    type = rep(c("Same category", "Different category"),
++               c(length(cos_same), length(cos_diff)))
++ )
+> > # Compute means & threshold
+> mean_same <- mean(cos_same)
+> mean_diff <- mean(cos_diff)
+> threshold <- (mean_same + mean_diff)/2
+> > # Create a data frame for vertical lines with labels
+> vlines <- data.frame(
++    xintercept = c(mean_same, mean_diff, threshold),
++    LineType = factor(c("Same-category mean", "Different-category mean", "Midpoint threshold"),
++                      levels = c("Same-category mean", "Different-category mean", "Midpoint threshold"))
++ )
+> > # Plot
+> ggplot(cos_df, aes(x = value, fill = type)) +
++    geom_histogram(alpha = 0.6, position = "identity", bins = 30) +
++    geom_vline(data = vlines, aes(xintercept = xintercept, color = LineType, linetype = LineType), size = 1) +
++    scale_color_manual(values = c("blue", "red", "black")) +
++    scale_linetype_manual(values = c("dashed", "dashed", "solid")) +
++    labs(
++        title = "Cosine Similarity Distribution",
++        x = "Cosine similarity",
++        y = "Number of image pairs",
++        fill = "Pair type",
++        color = "Reference lines",
++        linetype = "Reference lines"
++    ) +
++    theme_minimal()
+> # Prepare data
+> euc_df <- data.frame(
++    value = c(euc_same, euc_diff),
++    type = rep(c("Same category", "Different category"),
++               c(length(euc_same), length(euc_diff)))
++ )
+> > # Compute means & threshold
+> mean_same_euc <- mean(euc_same)
+> mean_diff_euc <- mean(euc_diff)
+> threshold_euc <- (mean_same_euc + mean_diff_euc)/2
+> > # Vertical lines with labels
+> vlines_euc <- data.frame(
++    xintercept = c(mean_same_euc, mean_diff_euc, threshold_euc),
++    LineType = factor(c("Same-category mean", "Different-category mean", "Midpoint threshold"),
++                      levels = c("Same-category mean", "Different-category mean", "Midpoint threshold"))
++ )
+> > # Plot
+> ggplot(euc_df, aes(x = value, fill = type)) +
++    geom_histogram(alpha = 0.6, position = "identity", bins = 30) +
++    geom_vline(data = vlines_euc, aes(xintercept = xintercept, color = LineType, linetype = LineType), size = 1) +
++    scale_color_manual(values = c("blue", "red", "black")) +
++    scale_linetype_manual(values = c("dashed", "dashed", "solid")) +
++    labs(
++        title = "Euclidean Distance Distribution",
++        x = "Euclidean distance",
++        y = "Number of image pairs",
++        fill = "Pair type",
++        color = "Reference lines",
++        linetype = "Reference lines"
++    ) +
++    theme_minimal()
+
+> # Cosine
+> cat("Cosine similarity:\n")
+Cosine similarity:
+> cat("Same-category mean:", mean(cos_same), "SD:", sd(cos_same), "\n")
+> cat("Different-category mean:", mean(cos_diff), "SD:", sd(cos_diff), "\n\n")
+
+> 
+> # Euclidean
+> cat("Euclidean distance:\n")
+Euclidean distance:
+> cat("Same-category mean:", mean(euc_same), "SD:", sd(euc_same), "\n")
+> cat("Different-category mean:", mean(euc_diff), "SD:", sd(euc_diff), "\n")
+
+> # Cosine threshold
+> cos_thresh <- (mean(cos_same) + mean(cos_diff)) / 2
+> 
+> # Euclidean threshold
+> euc_thresh <- (mean(euc_same) + mean(euc_diff)) / 2
+> # Cosine: similarity > threshold = same category
+> cos_correct_same <- sum(cos_same > cos_thresh)
+> cos_correct_diff <- sum(cos_diff <= cos_thresh)
+> cos_acc <- (cos_correct_same + cos_correct_diff) / (length(cos_same) + length(cos_diff))
+> cat("\nCosine classification accuracy:", cos_acc, "\n")
+
+> 
+> # Euclidean: distance < threshold = same category
+> euc_correct_same <- sum(euc_same < euc_thresh)
+> euc_correct_diff <- sum(euc_diff >= euc_thresh)
+> euc_acc <- (euc_correct_same + euc_correct_diff) / (length(euc_same) + length(euc_diff))
+> cat("Euclidean classification accuracy:", euc_acc, "\n")
+\end{lstlisting}
+
+\subsection{Experiment III: Neighborhood Purity Analysis}
+\underline{RStudio (R):}
+\begin{lstlisting}[language=R]
+> embeddings <- as.matrix(read.csv("clip_embeddings.csv"))
+> labels <- read.csv("labels.csv")$label
+> euclidean_dist <- function(x, Y) {
++    sqrt(rowSums((Y - matrix(x, nrow(Y), length(x), byrow = TRUE))^2))
++ }
+> 
+> cosine_sim <- function(x, Y) {
++    x_norm <- sqrt(sum(x^2))
++    Y_norms <- sqrt(rowSums(Y^2))
++    (Y %*% x) / (Y_norms * x_norm)
++ }
+> set.seed(123)
+> 
+> k_values <- c(3, 5, 10)
+> focus_indices <- sample(1:nrow(embeddings), 50)
+> 
+> results_3A <- data.frame()
+> 
+> for (k in k_values) {
++    euclid_scores <- c()
++    cosine_scores <- c()
++    
++    for (i in focus_indices) {
++        x <- embeddings[i, ]
++        label <- labels[i]
++        
++        # Euclidean
++        d <- euclidean_dist(x, embeddings)
++        d[i] <- Inf
++        euc_neighbors <- order(d)[1:k]
++        euclid_scores <- c(euclid_scores, sum(labels[euc_neighbors] == label))
++        
++        # Cosine
++        s <- cosine_sim(x, embeddings)
++        s[i] <- -Inf
++        cos_neighbors <- order(s, decreasing = TRUE)[1:k]
++        cosine_scores <- c(cosine_scores, sum(labels[cos_neighbors] == label))
++    }
++    
++    results_3A <- rbind(
++        results_3A,
++        data.frame(
++            k = k,
++            metric = "Euclidean",
++            mean_purity = mean(euclid_scores),
++            sd_purity = sd(euclid_scores)
++        ),
++        data.frame(
++            k = k,
++            metric = "Cosine",
++            mean_purity = mean(cosine_scores),
++            sd_purity = sd(cosine_scores)
++        )
++    )
++ }
+> 
+> results_3A
+> 
+> embeddings_norm <- embeddings / sqrt(rowSums(embeddings^2))
+> results_3B <- data.frame()
+> 
+> for (k in k_values) {
++    euclid_scores <- c()
++    cosine_scores <- c()
++    
++    for (i in focus_indices) {
++        x <- embeddings_norm[i, ]
++        label <- labels[i]
++        
++        # Euclidean (on unit sphere)
++        d <- euclidean_dist(x, embeddings_norm)
++        d[i] <- Inf
++        euc_neighbors <- order(d)[1:k]
++        euclid_scores <- c(euclid_scores, sum(labels[euc_neighbors] == label))
++        
++        # Cosine (equivalent geometry)
++        s <- cosine_sim(x, embeddings_norm)
++        s[i] <- -Inf
++        cos_neighbors <- order(s, decreasing = TRUE)[1:k]
++        cosine_scores <- c(cosine_scores, sum(labels[cos_neighbors] == label))
++    }
++    
++    results_3B <- rbind(
++        results_3B,
++        data.frame(
++            k = k,
++            metric = "Euclidean",
++            mean_purity = mean(euclid_scores),
++            sd_purity = sd(euclid_scores)
++        ),
++        data.frame(
++            k = k,
++            metric = "Cosine",
++            mean_purity = mean(cosine_scores),
++            sd_purity = sd(cosine_scores)
++        )
++    )
++ }
+> 
+> results_3B
+> 
+> library(ggplot2)
+> 
+> # ---- Combine your results ----
+> results_3A <- data.frame(
++    k = c(3, 3, 5, 5, 10, 10),
++    metric = c("Euclidean", "Cosine", "Euclidean", "Cosine", "Euclidean", "Cosine"),
++    mean_purity = c(2.56, 2.56, 4.30, 4.26, 8.36, 8.28),
++    condition = "Unnormalized"
++ )
+> 
+> results_3B <- data.frame(
++    k = c(3, 3, 5, 5, 10, 10),
++    metric = c("Euclidean", "Cosine", "Euclidean", "Cosine", "Euclidean", "Cosine"),
++    mean_purity = c(2.56, 2.56, 4.26, 4.26, 8.28, 8.28),
++    condition = "Normalized"
++ )
+> 
+> results_all <- rbind(results_3A, results_3B)
+> 
+> # ---- Plot ----
+> ggplot(results_all, aes(x = k, y = mean_purity, color = metric)) +
++    geom_line(linewidth = 1) +
++    geom_point(size = 2) +
++    facet_wrap(~ condition, nrow = 1) +
++    scale_x_continuous(breaks = c(3, 5, 10)) +
++    labs(
++        x = "Neighborhood size (k)",
++        y = "Mean semantic purity",
++        color = "Distance metric"
++    ) +
++    theme_minimal(base_size = 13) +
++    theme(
++        legend.position = "bottom",
++        strip.text = element_text(face = "bold")
++    )
+> + scale_color_manual(values = c("Euclidean" = "black", "Cosine" = "gray50"))
+
+> library(ggplot2)
+> 
+> # ---- Combine results WITH SD ----
+> results_3A <- data.frame(
++    k = c(3, 3, 5, 5, 10, 10),
++    metric = c("Euclidean", "Cosine", "Euclidean", "Cosine", "Euclidean", "Cosine"),
++    mean_purity = c(2.56, 2.56, 4.30, 4.26, 8.36, 8.28),
++    sd_purity = c(0.8609440, 0.8369039, 1.1111678, 1.1747340, 2.0479955, 2.1574740),
++    condition = "Unnormalized"
++ )
+> 
+> results_3B <- data.frame(
++    k = c(3, 3, 5, 5, 10, 10),
++    metric = c("Euclidean", "Cosine", "Euclidean", "Cosine", "Euclidean", "Cosine"),
++    mean_purity = c(2.56, 2.56, 4.26, 4.26, 8.28, 8.28),
++    sd_purity = c(0.8369039, 0.8369039, 1.1747340, 1.1747340, 2.1574740, 2.1574740),
++    condition = "Normalized"
++ )
+> 
+> results_all <- rbind(results_3A, results_3B)
+> 
+> # ---- Plot ----
+> ggplot(results_all, aes(x = k, y = mean_purity, color = metric)) +
++    geom_line(linewidth = 1) +
++    geom_point(size = 2) +
++    geom_errorbar(
++        aes(
++            ymin = mean_purity - sd_purity,
++            ymax = mean_purity + sd_purity
++        ),
++        width = 0.6,
++        linewidth = 0.6
++    ) +
++    facet_wrap(~ condition, nrow = 1) +
++    scale_x_continuous(breaks = c(3, 5, 10)) +
++    labs(
++        x = "Neighborhood size (k)",
++        y = "Mean semantic purity (+/- SD)",
++        color = "Distance metric"
++    ) +
++    theme_minimal(base_size = 13) +
++    theme(
++        legend.position = "bottom",
++        strip.text = element_text(face = "bold")
++    )
+\end{lstlisting}
+
+\subsection{Experiment IV: Dimensionality Reduction}
+\underline{RStudio (R):}
+\begin{lstlisting}[language=R]
+> install.packages(c("ggplot2"))
+> embeddings <- as.matrix(read.csv("clip_embeddings.csv"))
+> labels <- read.csv("labels.csv")$label
+> > data_raw <- data.frame(embeddings)
+> data_raw$label <- labels
+> > embeddings_norm <- embeddings / sqrt(rowSums(embeddings^2))
+> data_norm <- data.frame(embeddings_norm)
+> data_norm$label <- labels
+> pca_raw <- prcomp(embeddings, scale. = FALSE)
+> > pca_raw_df <- data.frame(
++    PC1 = pca_raw$x[,1],
++    PC2 = pca_raw$x[,2],
++    label = labels
++ )
+> > ggplot(pca_raw_df, aes(PC1, PC2, color = label)) +
++    geom_point(alpha = 0.7, size = 2) +
++    theme_minimal() +
++    labs(title = "PCA of CLIP embeddings (unnormalized)")
+> pca_norm <- prcomp(embeddings_norm, scale. = FALSE)
+> > pca_norm_df <- data.frame(
++    PC1 = pca_norm$x[,1],
++    PC2 = pca_norm$x[,2],
++    label = labels
++ )
+> > ggplot(pca_norm_df, aes(PC1, PC2, color = label)) +
++    geom_point(alpha = 0.7, size = 2) +
++    theme_minimal() +
++    labs(title = "PCA of CLIP embeddings (normalized)")
+\end{lstlisting}
+
+\underline{Google Colab (Python):}
+\begin{lstlisting}[language=Python]
+!pip install umap-learn
+import umap
+import numpy as np
+import pandas as pd
+
+embeddings = pd.read_csv("clip_embeddings.csv").values
+
+reducer = umap.UMAP(n_neighbors=15, min_dist=0.1, random_state=123)
+umap_2d = reducer.fit_transform(embeddings)
+
+pd.DataFrame(umap_2d, columns=["UMAP1", "UMAP2"]).to_csv("umap_raw.csv", index=False)
+
+emb_norm = embeddings / np.linalg.norm(embeddings, axis=1, keepdims=True)
+
+umap_norm = reducer.fit_transform(emb_norm)
+pd.DataFrame(umap_norm, columns=["UMAP1", "UMAP2"]).to_csv("umap_norm.csv", index=False)
+\end{lstlisting}
+
+\underline{RStudio (R):}
+\begin{lstlisting}[language=R]
+> library(ggplot2)
+> 
+> labels <- read.csv("labels.csv")$label
+> umap_raw <- read.csv("umap_raw.csv")
+> umap_norm <- read.csv("umap_norm.csv")
+> 
+> umap_raw$label <- labels
+> umap_norm$label <- labels
+> 
+> ggplot(umap_raw, aes(UMAP1, UMAP2, color = label)) +
++    geom_point(alpha = 0.7, size = 2) +
++    theme_minimal() +
++    labs(title = "UMAP of CLIP embeddings (unnormalized)")
+> 
+> ggplot(umap_norm, aes(UMAP1, UMAP2, color = label)) +
++    geom_point(alpha = 0.7, size = 2) +
++    theme_minimal() +
++    labs(title = "UMAP of CLIP embeddings (normalized)")
+\end{lstlisting}
